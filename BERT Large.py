@@ -14,12 +14,12 @@ from transformers import (
 )
 
 def main():
-    print("=== 1) 读取数据 ===")
+    print("=== 1) Load data ===")
     data = pd.read_csv("fake_news_all.csv")
     data["full_text"] = data["title"] + " " + data["text"]
     data.dropna(subset=["full_text", "label"], inplace=True)
 
-    print("\n=== 2) 划分训练/测试集 ===")
+    print("\n=== 2) Split train/test sets ===")
     train_df, test_df = train_test_split(
         data,
         test_size=0.2,
@@ -30,15 +30,15 @@ def main():
     y_train = train_df["label"].tolist()
     X_test  = test_df["full_text"].tolist()
     y_test  = test_df["label"].tolist()
-    print(f"训练集大小: {len(X_train)}, 测试集大小: {len(X_test)}")
+    print(f"Training size: {len(X_train)}, Test size: {len(X_test)}")
 
-    # 本地 TF权重目录
+    # Local TF weights directory
     MODEL_NAME = "./bert_large_uncased/"
-    print("\n=== 3) 初始化分词器与模型(本地) ===")
+    print("\n=== 3) Initialize tokenizer and model (local) ===")
 
-    # local_files_only=True 防止去Hub拉取
+    # local_files_only=True prevents downloading from Hub
     tokenizer = BertTokenizerFast.from_pretrained(MODEL_NAME, local_files_only=True)
-    MAX_LEN = 128  # 可根据显存调大
+    MAX_LEN = 128  # Can increase based on GPU memory
 
     def encode_fn(texts, labels):
         encodings = tokenizer(
@@ -53,12 +53,12 @@ def main():
     train_enc, train_labels = encode_fn(X_train, y_train)
     test_enc, test_labels   = encode_fn(X_test,  y_test)
 
-    print("\n=== 4) 构建tf.data.Dataset ===")
+    print("\n=== 4) Build tf.data.Dataset ===")
     BATCH_SIZE = 16
     ds_train = tf.data.Dataset.from_tensor_slices((dict(train_enc), train_labels)).shuffle(len(X_train)).batch(BATCH_SIZE)
     ds_test  = tf.data.Dataset.from_tensor_slices((dict(test_enc),  test_labels )).batch(BATCH_SIZE)
 
-    print("\n=== 5) 构建并微调BERT Large(本地) ===")
+    print("\n=== 5) Build and fine-tune BERT Large (local) ===")
     model = TFBertForSequenceClassification.from_pretrained(
         MODEL_NAME,
         local_files_only=True,
@@ -85,14 +85,14 @@ def main():
         metrics=["accuracy"]
     )
 
-    # EarlyStopping, 当 val_accuracy 1轮无提升则停止
+    # EarlyStopping, stops when val_accuracy doesn't improve for 1 epoch
     early_stop = tf.keras.callbacks.EarlyStopping(
         monitor="val_accuracy",
         patience=1,
         restore_best_weights=True
     )
 
-    print(f"开始训练: epochs={EPOCHS}, batch_size={BATCH_SIZE}, LR={init_lr}")
+    print(f"Start training: epochs={EPOCHS}, batch_size={BATCH_SIZE}, LR={init_lr}")
     history = model.fit(
         ds_train,
         validation_data=ds_test,
@@ -100,11 +100,11 @@ def main():
         callbacks=[early_stop]
     )
 
-    print("\n=== 测试集评估 ===")
+    print("\n=== Test set evaluation ===")
     eval_loss, eval_acc = model.evaluate(ds_test)
     print(f"Test Accuracy: {eval_acc:.4f}, Test Loss: {eval_loss:.4f}")
 
-    # 预测
+    # Prediction
     preds_logits = model.predict(ds_test)["logits"]
     preds_label = np.argmax(preds_logits, axis=1)
     print("Confusion Matrix:")
@@ -112,7 +112,7 @@ def main():
     print("Classification Report:")
     print(classification_report(y_test, preds_label, digits=4))
 
-    print("\n=== 阈值微调(0.4~0.6) ===")
+    print("\n=== Threshold tuning (0.4~0.6) ===")
     probs = tf.nn.softmax(preds_logits, axis=-1).numpy()[:,1]
     best_thr, best_acc = 0.5, eval_acc
     for thr in np.arange(0.40, 0.61, 0.01):
@@ -121,7 +121,7 @@ def main():
         if this_acc > best_acc:
             best_acc = this_acc
             best_thr = thr
-    print(f"最优阈值: {best_thr:.2f}, 对应Acc={best_acc:.4f}")
+    print(f"Optimal threshold: {best_thr:.2f}, Corresponding Acc={best_acc:.4f}")
     if best_thr != 0.5:
         final_pred = (probs>=best_thr).astype(int)
         print("Confusion matrix at best_thr:")
@@ -129,11 +129,11 @@ def main():
         print("Report at best_thr:")
         print(classification_report(y_test, final_pred, digits=4))
 
-    # 如果你想把微调好的模型再保存(含 tf_model.h5):
+    # If you want to save the fine-tuned model (including tf_model.h5):
     # model.save_pretrained("./my_tf_bert_large/")
 
 if __name__=="__main__":
     devs = tf.config.list_physical_devices("GPU")
     if devs:
-        print("GPU 可用:", devs)
+        print("GPU available:", devs)
     main()
